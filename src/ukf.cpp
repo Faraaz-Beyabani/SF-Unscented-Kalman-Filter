@@ -6,7 +6,7 @@ using Eigen::MatrixXd;
 using Eigen::VectorXd;
 
 /**
- * Initializes Unscented Kalman filter lol
+ * Initializes Unscented Kalman filter
  */
 UKF::UKF() {
   // if this is false, laser measurements will be ignored (except during init)
@@ -22,10 +22,10 @@ UKF::UKF() {
   P_ = MatrixXd(5, 5);
 
   // Process noise standard deviation longitudinal acceleration in m/s^2
-  std_a_ = 0.5;
+  std_a_ = 1.1;
 
   // Process noise standard deviation yaw acceleration in rad/s^2
-  std_yawdd_ = 0.2;
+  std_yawdd_ = 0.5;
   
   /**
    * DO NOT MODIFY measurement noise values below.
@@ -66,7 +66,7 @@ UKF::UKF() {
   
   weights_(0) = lambda_/(lambda_+n_aug_);
   for(int i = 1; i < weights_.size(); i++) {
-    weights_(i) = 1/2*(lambda_+n_aug_);
+    weights_(i) = 1/(2*(lambda_+n_aug_));
   }
 }
 
@@ -96,11 +96,12 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
         double rho, phi, rhod;
         rho = raw_vals[0];
         phi = raw_vals[1];
+        rhod = raw_vals[2];
 
         px = rho*cos(phi);
         py = rho*sin(phi);
 
-        x_ << px, py, 0, 0, 0;
+        x_ << px, py, rhod, 0, 0;
         break;
       default:
         std::cout << "Unsupported sensor type in UKF::ProcessMeasurement at ukf.cpp" << std::endl;
@@ -227,15 +228,81 @@ void UKF::UpdateLidar(MeasurementPackage meas_package) {
    * covariance, P_.
    * You can also calculate the lidar NIS, if desired.
    */
+  
+  int n_z = 2;
+  MatrixXd Zsig = MatrixXd(n_z, 2 * n_aug_ + 1);
+  VectorXd z_pred = VectorXd(n_z);
+  MatrixXd S = MatrixXd(n_z,n_z);
+  
+  for(int i = 0; i < 2 * n_aug_ + 1; i++)
+  {
+   	double p_x = Xsig_pred_(0,i);
+    double p_y = Xsig_pred_(1,i);
+    double v  = Xsig_pred_(2,i);
+    double yaw = Xsig_pred_(3,i);
+    
+    Zsig(0, i) = p_x;
+    Zsig(1, i) = p_y;
+  }
+  
+  z_pred.fill(0.0);
+  for(int i = 0; i < 2*n_aug_+1; i++)
+  {
+    z_pred = z_pred + weights_(i)*Zsig.col(i);
+  }
+  
+  S.fill(0.0);
+  for(int i = 0; i < 2*n_aug_ + 1; i++)
+  {
+    VectorXd z_diff = Zsig.col(i) - z_pred;
+
+    // angle normalization
+    while (z_diff(1)> M_PI) z_diff(1)-=2.*M_PI;
+    while (z_diff(1)<-M_PI) z_diff(1)+=2.*M_PI;
+
+    S = S + weights_(i) * z_diff * z_diff.transpose();
+  }
+  
+  MatrixXd R = MatrixXd(n_z,n_z);
+  R <<  std_laspx_*std_laspx_, 0,
+        0, std_laspy_*std_laspy_;
+  S = S + R;
+  
+  MatrixXd Tc = MatrixXd(n_x_, n_z);
+  VectorXd z = meas_package.raw_measurements_;
+  
+  Tc.fill(0.0);
+  for (int i = 0; i < 2 * n_aug_ + 1; ++i) {  // 2n+1 simga points
+    // residual
+    VectorXd z_diff = Zsig.col(i) - z_pred;
+    // angle normalization
+    while (z_diff(1)> M_PI) z_diff(1)-=2.*M_PI;
+    while (z_diff(1)<-M_PI) z_diff(1)+=2.*M_PI;
+
+    // state difference
+    VectorXd x_diff = Xsig_pred_.col(i) - x_;
+    // angle normalization
+    while (x_diff(3)> M_PI) x_diff(3)-=2.*M_PI;
+    while (x_diff(3)<-M_PI) x_diff(3)+=2.*M_PI;
+
+    Tc = Tc + weights_(i) * x_diff * z_diff.transpose();
+  }
+  
+  MatrixXd K = Tc * S.inverse();
+
+  // residual
+  VectorXd z_diff = z - z_pred;
+
+  // angle normalization
+  while (z_diff(1)> M_PI) z_diff(1)-=2.*M_PI;
+  while (z_diff(1)<-M_PI) z_diff(1)+=2.*M_PI;
+
+  // update state mean and covariance matrix
+  x_ = x_ + K * z_diff;
+  P_ = P_ - K*S*K.transpose();
 }
 
 void UKF::UpdateRadar(MeasurementPackage meas_package) {
-  /**
-   * TODO: Complete this function! Use radar data to update the belief 
-   * about the object's position. Modify the state vector, x_, and 
-   * covariance, P_.
-   * You can also calculate the radar NIS, if desired.
-   */
   
   // number of measurements we get with a radar
   int n_z = 3;
